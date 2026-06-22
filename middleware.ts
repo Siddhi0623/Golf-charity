@@ -45,7 +45,23 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const { response, user } = await updateSession(request);
+  // Fail-open: if updateSession errors or hangs we let the request through.
+  // The layouts re-check auth server-side anyway (defense in depth via RLS).
+  let response: NextResponse;
+  let user: { id: string } | null = null;
+  try {
+    const updated = await Promise.race([
+      updateSession(request),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("middleware: updateSession timeout")), 4000),
+      ),
+    ]);
+    response = updated.response;
+    user = updated.user;
+  } catch (err) {
+    console.error("[middleware] updateSession failed:", err);
+    return NextResponse.next();
+  }
 
   // Logged-in user trying to hit /login or /register → dashboard.
   if (user && AUTH_PAGES.includes(pathname)) {
